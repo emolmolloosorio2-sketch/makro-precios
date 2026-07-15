@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.db
+backend/knasta.db
+
+# Temp / debug scripts
+backend/check_*
+backend/debug_*
+backend/find_*
+backend/fix_*
+backend/test_*
+backend/verify_*
+backend/trace_*
+backend/trigger_*
+backend/analyze_*
+
+# Node
+node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
