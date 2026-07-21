@@ -297,29 +297,53 @@ export default function POS() {
     return encoder.encode(lines.join('\n'))
   }
 
+  function receiptHTML(): string {
+    if (!receipt) return ''
+    const rows = receipt.items.map(i =>
+      `<tr><td style="padding:2px 0">${i.product_name}</td><td style="text-align:center;padding:2px 4px">${i.quantity}</td><td style="text-align:right;padding:2px 4px">S/${i.unit_price.toFixed(2)}</td><td style="text-align:right;padding:2px 4px">S/${i.subtotal.toFixed(2)}</td></tr>`
+    ).join('')
+    const method = receipt.payment_method === 'credit' || receipt.payment_method === 'debt' ? 'Crédito' : 'Efectivo'
+    const date = new Date(receipt.created_at).toLocaleString('es-PE')
+    const customer = receiptCustomerName ? `<br>Cliente: ${receiptCustomerName}` : ''
+    const extra = (receipt.payment_method === 'credit' || receipt.payment_method === 'debt') && receiptCashPaid > 0
+      ? `<br>Efectivo: S/${receiptCashPaid.toFixed(2)} — Saldo: S/${(receipt.total - receiptCashPaid).toFixed(2)}`
+      : ''
+    return `<html><body style="font-family:'Courier New',monospace;font-size:10px;width:58mm;margin:0;padding:2mm"><div style="text-align:right;color:#999">${date}</div><table style="width:100%;border-collapse:collapse">${rows}</table><hr><div style="font-weight:bold;font-size:12px">Total: S/${receipt.total.toFixed(2)}</div><div style="color:#666;font-size:9px">${method}${customer}${extra}</div><br><br><br></body></html>`
+  }
+
   async function printWebUSB() {
-    if (!navigator.usb) {
-      window.print()
+    const cap = (window as any).Capacitor
+    if (cap?.isPluginAvailable('Printer')) {
+      try {
+        await cap.Plugins.Printer.print({ html: receiptHTML(), title: 'Recibo' })
+        setPrintStatus('Impreso correctamente')
+        setTimeout(() => setPrintStatus(''), 2000)
+      } catch (e: any) {
+        setPrintStatus('Error: ' + e.message)
+      }
       return
     }
-    try {
-      let device = printerDevice.current
-      if (!device) {
-        device = await navigator.usb.requestDevice({ filters: [] })
-        printerDevice.current = device
+    if (navigator.usb) {
+      try {
+        let device = printerDevice.current
+        if (!device) {
+          device = await navigator.usb.requestDevice({ filters: [] })
+          printerDevice.current = device
+        }
+        await device.open()
+        const iface = device.configuration?.interfaces?.[0]
+        if (iface) await device.claimInterface(iface.interfaceNumber)
+        const data = buildEscPos(receipt!, receiptCustomerName, receiptCashPaid)
+        await device.transferOut(iface?.endpoints?.[0]?.endpointNumber ?? 1, data)
+        await device.close()
+        setPrintStatus('Impreso correctamente')
+        setTimeout(() => setPrintStatus(''), 2000)
+      } catch (e: any) {
+        setPrintStatus('Error: ' + e.message)
       }
-      await device.open()
-      // claim first interface
-      const iface = device.configuration?.interfaces?.[0]
-      if (iface) await device.claimInterface(iface.interfaceNumber)
-      const data = buildEscPos(receipt!, receiptCustomerName, receiptCashPaid)
-      await device.transferOut(iface?.endpoints?.[0]?.endpointNumber ?? 1, data)
-      await device.close()
-      setPrintStatus('Impreso correctamente')
-      setTimeout(() => setPrintStatus(''), 2000)
-    } catch (e: any) {
-      setPrintStatus('Error: ' + e.message)
+      return
     }
+    window.print()
   }
 
   async function handleCloseCaja() {
