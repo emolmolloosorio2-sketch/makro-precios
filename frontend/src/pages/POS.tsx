@@ -1,10 +1,11 @@
+/// <reference types="w3c-web-usb" />
 import { useEffect, useRef, useState } from 'react'
 import {
   posListProducts, posGetProductByBarcode, posListCustomers,
-  posCreateSale, posGetTodaySales, posCloseStatus,
+  posCreateSale, posCloseStatus,
   posOpenClose, posCloseCaja, posListCategories, posCreateCategory,
   posSuspendTicket, posListSuspendedTickets, posGetSuspendedTicket, posDiscardTicket,
-  PosProduct, PosCustomer, SuspendedTicket,
+  PosProduct, PosCustomer, SuspendedTicket, PosSale,
 } from '../services/api'
 
 interface CartItem {
@@ -12,6 +13,39 @@ interface CartItem {
   product_name: string
   quantity: number
   unit_price: number
+  variablePrice?: boolean
+}
+
+function PricePromptModal({productName, inputRef, onConfirm, onCancel}: {
+  productName: string
+  inputRef: React.RefObject<HTMLInputElement | null>
+  onConfirm: (val: number | null) => void
+  onCancel: () => void
+}) {
+  const [val, setVal] = useState('')
+  useEffect(() => { inputRef.current?.focus() }, [])
+  return (
+    <div className="fixed inset-x-0 top-0 bottom-0 bg-black/50 z-50">
+      <div className="bg-white rounded-xl p-6 w-80 max-w-full mx-auto mt-16" onClick={e => e.stopPropagation()}>
+        <h3 className="font-bold text-lg mb-1">Precio variable</h3>
+        <p className="text-sm text-gray-500 mb-4">{productName}</p>
+        <input
+          ref={inputRef}
+          type="text"
+          inputMode="decimal"
+          value={val}
+          onChange={e => setVal(e.target.value.replace(/[^0-9.,]/g, ''))}
+          onKeyDown={e => { if (e.key === 'Enter') onConfirm(parseFloat(val.replace(/,/g, '.')) || null) }}
+          placeholder="0.00"
+          className="w-full border rounded-lg px-4 py-3 text-lg font-bold text-center"
+        />
+        <div className="flex gap-2 mt-4">
+          <button onClick={() => onConfirm(parseFloat(val.replace(/,/g, '.')) || null)} className="flex-1 bg-blue-600 text-white py-2.5 rounded-lg font-bold">OK</button>
+          <button onClick={onCancel} className="px-4 border rounded-lg">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export default function POS() {
@@ -22,12 +56,10 @@ export default function POS() {
   const [barcode, setBarcode] = useState('')
   const [customerSearch, setCustomerSearch] = useState('')
   const [selectedCustomer, setSelectedCustomer] = useState<PosCustomer | null>(null)
-  const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [paymentMethod, setPaymentMethod] = useState('paid')
   const [asDebt, setAsDebt] = useState(false)
   const [cashPaidStr, setCashPaidStr] = useState('')
-  const [showPayment, setShowPayment] = useState(false)
   const [message, setMessage] = useState('')
-  const [todayTotal, setTodayTotal] = useState(0)
   const [catFilter, setCatFilter] = useState(0)
   const [search, setSearch] = useState('')
   const [suspendedTickets, setSuspendedTickets] = useState<SuspendedTicket[]>([])
@@ -37,6 +69,13 @@ export default function POS() {
   const [initialCash, setInitialCash] = useState(0)
   const [finalCash, setFinalCash] = useState(0)
   const [expenses, setExpenses] = useState(0)
+  const [pricePrompt, setPricePrompt] = useState<{product: PosProduct; resolve: (v: number | null) => void} | null>(null)
+  const [receipt, setReceipt] = useState<PosSale | null>(null)
+  const [receiptCustomerName, setReceiptCustomerName] = useState('')
+  const [receiptCashPaid, setReceiptCashPaid] = useState(0)
+  const [printStatus, setPrintStatus] = useState('')
+  const printerDevice = useRef<USBDevice | null>(null)
+  const priceInputRef = useRef<HTMLInputElement>(null)
   const barcodeRef = useRef<HTMLInputElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -60,6 +99,7 @@ export default function POS() {
     if (cart.length > 0 && !confirm('El carrito actual se perderá. ¿Continuar?')) return
     const t = await posGetSuspendedTicket(ticketId)
     setCart(t.items.map(i => ({product_id: i.product_id, product_name: i.product_name, quantity: i.quantity, unit_price: i.unit_price})))
+    await posDiscardTicket(ticketId)
     setShowTickets(false)
     loadTickets()
   }
@@ -75,7 +115,14 @@ export default function POS() {
         if (code) {
           e.preventDefault()
           scanBuf.current = ''
-          posGetProductByBarcode(code).then(p => addToCart(p)).catch(() => {
+          posGetProductByBarcode(code).then(async p => {
+            if (p.price === 0) {
+              const price = await askPrice(p)
+              if (price && price > 0) addToCart(p, price)
+            } else {
+              addToCart(p)
+            }
+          }).catch(() => {
             setMessage(`Código ${code} no encontrado`)
             setTimeout(() => setMessage(''), 3000)
           })
@@ -105,8 +152,6 @@ export default function POS() {
     const s = await posCloseStatus()
     setCloseInfo(s)
     if (!s.open) setShowClose(true)
-    const today = await posGetTodaySales()
-    setTodayTotal(today.total)
   }
 
   async function handleBarcode() {
@@ -114,7 +159,12 @@ export default function POS() {
     if (!code) return
     try {
       const p = await posGetProductByBarcode(code)
-      addToCart(p)
+      if (p.price === 0) {
+        const price = await askPrice(p)
+        if (price && price > 0) addToCart(p, price)
+      } else {
+        addToCart(p)
+      }
       setBarcode('')
       setTimeout(() => barcodeRef.current?.focus(), 0)
     } catch {
@@ -124,9 +174,11 @@ export default function POS() {
     }
   }
 
-  function addToCart(p: PosProduct) {
+  function addToCart(p: PosProduct, overridePrice?: number) {
+    const price = overridePrice ?? p.price
+    const isVar = p.price === 0
     setCart(prev => {
-      const existing = prev.find(i => i.product_id === p.id)
+      const existing = isVar ? undefined : prev.find(i => i.product_id === p.id)
       if (existing) {
         return prev.map(i =>
           i.product_id === p.id ? { ...i, quantity: i.quantity + 1 } : i
@@ -136,7 +188,8 @@ export default function POS() {
         product_id: p.id,
         product_name: p.name,
         quantity: 1,
-        unit_price: p.price,
+        unit_price: price,
+        variablePrice: isVar,
       }]
     })
   }
@@ -153,13 +206,28 @@ export default function POS() {
 
   const total = cart.reduce((sum, item) => sum + item.quantity * item.unit_price, 0)
 
-  function selectProductQuick(p: PosProduct) {
-    addToCart(p)
-    searchRef.current?.focus()
+  function askPrice(p: PosProduct): Promise<number | null> {
+    return new Promise(resolve => {
+      setPricePrompt({product: p, resolve})
+    })
+  }
+
+  async function selectProductQuick(p: PosProduct) {
+    if (p.price === 0) {
+      const price = await askPrice(p)
+      if (!price || price <= 0) return
+      addToCart(p, price)
+    } else {
+      addToCart(p)
+    }
   }
 
   async function handlePay() {
     if (cart.length === 0) return
+    if (cart.some(i => i.unit_price <= 0)) {
+      setMessage('Falta ingresar precio en uno o más productos')
+      return
+    }
     if (asDebt && !selectedCustomer) {
       setMessage('Selecciona un cliente para la deuda')
       return
@@ -172,14 +240,14 @@ export default function POS() {
         as_debt: asDebt,
         cash_paid: parseFloat(cashPaidStr.replace(/,/g, '.')) || 0,
       })
-      setMessage(`Venta #${sale.id} registrada — S/ ${sale.total.toFixed(2)}`)
+      setReceipt(sale)
+      setReceiptCustomerName(selectedCustomer?.name ?? '')
+      setReceiptCashPaid(parseFloat(cashPaidStr.replace(/,/g, '.')) || 0)
+      setMessage(`Venta #${sale.id} registrada`)
       setCart([])
       setSelectedCustomer(null)
       setAsDebt(false)
       setCashPaidStr('')
-      setShowPayment(false)
-      const today = await posGetTodaySales()
-      setTodayTotal(today.total)
     } catch (e: any) {
       setMessage('Error: ' + e.message)
     }
@@ -189,6 +257,69 @@ export default function POS() {
     await posOpenClose(initialCash)
     setShowClose(false)
     setCloseInfo({open: true, initial_cash: initialCash})
+  }
+
+  function buildEscPos(receipt: PosSale, customerName: string, cashPaid: number): Uint8Array {
+    const lines: string[] = []
+    lines.push('\x1B\x61\x01') // center
+    const date = new Date(receipt.created_at).toLocaleString('es-PE')
+    lines.push(date)
+    lines.push('')
+    lines.push('\x1B\x61\x00') // left
+    lines.push(''.padEnd(32, '-'))
+    // header
+    lines.push(`${'Producto'.padEnd(12)}${'Cant'.padStart(4)}${'Precio'.padStart(8)}${'Subtotal'.padStart(8)}`)
+    lines.push(''.padEnd(32, '-'))
+    for (const item of receipt.items) {
+      const name = item.product_name.length > 12 ? item.product_name.slice(0, 12) : item.product_name
+      lines.push(`${name.padEnd(12)}${String(item.quantity).padStart(4)}${('S/' + item.unit_price.toFixed(2)).padStart(8)}${('S/' + item.subtotal.toFixed(2)).padStart(8)}`)
+    }
+    lines.push(''.padEnd(32, '-'))
+    const method = receipt.payment_method === 'credit' || receipt.payment_method === 'debt' ? 'Credito' : 'Efectivo'
+    lines.push(`Total: S/${receipt.total.toFixed(2)}`.padStart(32))
+    if (customerName) {
+      lines.push(`Cliente: ${customerName}`)
+      if (cashPaid > 0) {
+        lines.push(`Efectivo: S/${cashPaid.toFixed(2)}`)
+        lines.push(`Saldo: S/${(receipt.total - cashPaid).toFixed(2)}`)
+      }
+    }
+    lines.push(`Pago: ${method}`)
+    lines.push('')
+    lines.push('\x1B\x61\x01')
+    lines.push('Gracias por su compra!')
+    lines.push('\x1B\x61\x00')
+    lines.push('')
+    lines.push('')
+    lines.push('')
+    lines.push('\x1D\x56\x00') // cut paper
+    const encoder = new TextEncoder()
+    return encoder.encode(lines.join('\n'))
+  }
+
+  async function printWebUSB() {
+    if (!navigator.usb) {
+      window.print()
+      return
+    }
+    try {
+      let device = printerDevice.current
+      if (!device) {
+        device = await navigator.usb.requestDevice({ filters: [] })
+        printerDevice.current = device
+      }
+      await device.open()
+      // claim first interface
+      const iface = device.configuration?.interfaces?.[0]
+      if (iface) await device.claimInterface(iface.interfaceNumber)
+      const data = buildEscPos(receipt!, receiptCustomerName, receiptCashPaid)
+      await device.transferOut(iface?.endpoints?.[0]?.endpointNumber ?? 1, data)
+      await device.close()
+      setPrintStatus('Impreso correctamente')
+      setTimeout(() => setPrintStatus(''), 2000)
+    } catch (e: any) {
+      setPrintStatus('Error: ' + e.message)
+    }
   }
 
   async function handleCloseCaja() {
@@ -206,7 +337,11 @@ export default function POS() {
         <div className="bg-white rounded-lg shadow-sm border p-4 mb-4">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold">Nueva Venta</h2>
-            <span className="text-sm text-gray-500">Hoy: S/ {todayTotal.toFixed(2)}</span>
+            {cart.length > 0 && (
+              <button onClick={handleSuspend} className="text-sm border border-blue-300 text-blue-700 px-3 py-1 rounded-lg">
+                Guardar
+              </button>
+            )}
           </div>
 
           {/* Barcode scanner hidden — global keydown lo captura */}
@@ -223,48 +358,46 @@ export default function POS() {
           />
 
           {/* Cart */}
-          <div className="border rounded-lg mb-4">
-            <table className="w-full text-sm">
+          <div className="border rounded-lg mb-4 overflow-x-auto">
+            <table className="w-full text-sm md:text-base">
               <thead>
                 <tr className="bg-gray-50 border-b">
-                  <th className="text-left p-2">Producto</th>
-                  <th className="p-2 w-20">Cant</th>
-                  <th className="p-2 w-24">Precio</th>
-                  <th className="p-2 w-24">Subtotal</th>
-                  <th className="p-2 w-10"></th>
+                  <th className="text-left p-1 md:p-2">Producto</th>
+                  <th className="p-1 md:p-2 w-24 md:w-20">Cant</th>
+                  <th className="p-1 md:p-2 w-16 md:w-24">Precio</th>
+                  <th className="p-1 md:p-2 w-20 md:w-24">Subtotal</th>
+                  <th className="p-1 md:p-2 w-8 md:w-10"></th>
                 </tr>
               </thead>
               <tbody>
                 {cart.map((item, i) => (
                   <tr key={i} className="border-b">
-                    <td className="p-2">{item.product_name}</td>
-                    <td className="p-2">
-                      <input
-                        type="number"
-                        value={item.quantity}
-                        onChange={e => updateCartItem(i, 'quantity', Math.max(0, Number(e.target.value)))}
-                        className="w-16 border rounded px-1 py-0.5 text-center"
-                        min={0}
-                        step="0.01"
-                      />
+                    <td className="p-1 md:p-2">{item.product_name}{item.variablePrice && <span className="text-xs text-orange-500 ml-1">(var)</span>}</td>
+                    <td className="p-1 md:p-2">
+                      <div className="flex items-center gap-0.5 md:gap-1">
+                        <button onClick={() => updateCartItem(i, 'quantity', Math.max(0, item.quantity - 1))} className="w-6 h-6 md:w-7 md:h-7 rounded-full border border-gray-300 text-gray-600 flex items-center justify-center font-bold text-base md:text-lg leading-none hover:bg-gray-100">&minus;</button>
+                        <span className="w-6 md:w-8 text-center font-bold">{item.quantity}</span>
+                        <button onClick={() => updateCartItem(i, 'quantity', item.quantity + 1)} className="w-6 h-6 md:w-7 md:h-7 rounded-full border border-gray-300 text-gray-600 flex items-center justify-center font-bold text-base md:text-lg leading-none hover:bg-gray-100">+</button>
+                      </div>
                     </td>
-                    <td className="p-2">
+                    <td className="p-1 md:p-2">
                       <input
                         type="number"
-                        value={item.unit_price}
+                        value={item.variablePrice && item.unit_price === 0 ? '' : item.unit_price}
                         onChange={e => updateCartItem(i, 'unit_price', Number(e.target.value))}
-                        className="w-20 border rounded px-1 py-0.5 text-right"
+                        className={`w-16 md:w-20 border rounded px-1 py-0.5 text-right text-sm md:text-base ${item.variablePrice ? 'border-orange-400 bg-orange-50 font-bold' : ''}`}
                         step="0.01"
+                        placeholder={item.variablePrice ? 'Precio' : undefined}
                       />
                     </td>
-                    <td className="p-2 text-right">S/ {(item.quantity * item.unit_price).toFixed(2)}</td>
-                    <td className="p-2">
-                      <button onClick={() => removeFromCart(i)} className="text-red-500 text-lg">&times;</button>
+                    <td className="p-1 md:p-2 text-right text-sm md:text-base">S/{(item.quantity * item.unit_price).toFixed(2)}</td>
+                    <td className="p-1 md:p-2">
+                      <button onClick={() => removeFromCart(i)} className="w-6 h-6 md:w-7 md:h-7 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold text-sm md:text-lg leading-none hover:bg-red-200" title="Quitar">&times;</button>
                     </td>
                   </tr>
                 ))}
                 {cart.length === 0 && (
-                  <tr><td colSpan={5} className="p-4 text-center text-gray-400">Carrito vacío</td></tr>
+                  <tr><td colSpan={5} className="p-2 md:p-4 text-center text-gray-400">Carrito vacío</td></tr>
                 )}
               </tbody>
             </table>
@@ -276,41 +409,13 @@ export default function POS() {
           </div>
 
           {/* Actions */}
-          {!showPayment ? (
-            <>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => setShowPayment(true)}
-                  disabled={cart.length === 0}
-                  className="bg-green-600 text-white py-3 rounded-lg font-bold text-lg disabled:opacity-50"
-                >
-                  Cobrar S/ {total.toFixed(2)}
-                </button>
-                <button
-                  onClick={handleSuspend}
-                  disabled={cart.length === 0}
-                  className="border border-blue-300 text-blue-700 py-3 rounded-lg font-bold text-lg disabled:opacity-40"
-                >
-                  Guardar ticket
-                </button>
-              </div>
-              {suspendedTickets.length > 0 && (
-                <button
-                  onClick={() => setShowTickets(true)}
-                  className="w-full border border-orange-300 text-orange-700 py-2 rounded-lg text-sm mt-2"
-                >
-                  Tickets guardados ({suspendedTickets.length})
-                </button>
-              )}
-            </>
-          ) : (
-            <div className="space-y-3">
+          <div className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => { setPaymentMethod('paid'); setAsDebt(false) }}
                   className={`py-3 rounded-lg border font-bold text-lg ${paymentMethod === 'paid' && !asDebt ? 'bg-blue-600 text-white border-blue-600' : 'bg-white hover:bg-gray-50'}`}
                 >
-                  Pagado
+                  Efectivo
                 </button>
                 <button
                   onClick={() => { setPaymentMethod('credit'); setAsDebt(true); setCashPaidStr('') }}
@@ -367,14 +472,15 @@ export default function POS() {
                   ) : null}
                 </div>
               )}
-              <div className="flex gap-2">
-                <button onClick={handlePay} className="flex-1 bg-green-600 text-white py-3 rounded-lg font-bold">
-                  Confirmar
+              <button onClick={handlePay} className="w-full bg-green-600 text-white py-3 rounded-lg font-bold">
+                Confirmar
+              </button>
+              {suspendedTickets.length > 0 && (
+                <button onClick={() => setShowTickets(true)} className="w-full border border-orange-300 text-orange-700 py-2 rounded-lg text-sm">
+                  Tickets guardados ({suspendedTickets.length})
                 </button>
-                <button onClick={() => setShowPayment(false)} className="px-4 py-2 border rounded-lg">Cancelar</button>
-              </div>
+              )}
             </div>
-          )}
         </div>
 
         {message && (
@@ -423,7 +529,7 @@ export default function POS() {
                 className="border rounded-lg p-2 text-left hover:bg-blue-50 text-sm"
               >
                 <div className="font-medium truncate">{p.name}</div>
-                <div className="text-blue-600 font-bold">S/ {p.price.toFixed(2)}</div>
+                <div className="text-blue-600 font-bold">{p.price === 0 ? <span className="text-orange-500">Precio variable</span> : `S/ ${p.price.toFixed(2)}`}</div>
                 <div className="text-xs text-gray-400">Stock: {p.stock}</div>
               </button>
             ))}
@@ -462,6 +568,16 @@ export default function POS() {
         </div>
       )}
 
+      {/* Price prompt modal */}
+      {pricePrompt && (
+        <PricePromptModal
+          productName={pricePrompt.product.name}
+          inputRef={priceInputRef}
+          onConfirm={val => { const r = pricePrompt.resolve; setPricePrompt(null); r(val) }}
+          onCancel={() => { const r = pricePrompt.resolve; setPricePrompt(null); r(null) }}
+        />
+      )}
+
       {/* Close modal */}
       {showClose && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -493,6 +609,51 @@ export default function POS() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Receipt modal */}
+      {receipt && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 print-friendly">
+          <div className="bg-white rounded-xl w-full max-w-sm max-h-[90vh] overflow-y-auto print-receipt">
+            <div className="p-6 space-y-3 text-sm">
+              <div className="text-right text-xs text-gray-400 border-b pb-2">
+                {new Date(receipt.created_at).toLocaleString('es-PE')}
+              </div>
+              <table className="w-full text-xs">
+                <thead><tr className="border-b text-gray-400"><th className="text-left py-1">Producto</th><th className="py-1 text-center">Cant</th><th className="py-1 text-right">Precio</th><th className="py-1 text-right">Subtotal</th></tr></thead>
+                <tbody>
+                  {receipt.items.map((item, i) => (
+                    <tr key={i} className="border-b">
+                      <td className="py-1">{item.product_name}</td>
+                      <td className="py-1 text-center">{item.quantity}</td>
+                      <td className="py-1 text-right">S/{item.unit_price.toFixed(2)}</td>
+                      <td className="py-1 text-right">S/{item.subtotal.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="flex justify-between font-bold text-base pt-2">
+                <span>Total</span>
+                <span>S/ {receipt.total.toFixed(2)}</span>
+              </div>
+              <div className="text-xs text-gray-500 space-y-1">
+                <p>Método de pago: {receipt.payment_method === 'credit' || receipt.payment_method === 'debt' ? 'Crédito' : 'Efectivo'}{receiptCustomerName && <span> — {receiptCustomerName}</span>}</p>
+                {(receipt.payment_method === 'credit' || receipt.payment_method === 'debt') && receiptCashPaid > 0 && (
+                  <p>Al contado: S/ {receiptCashPaid.toFixed(2)} — Saldo: S/ {(receipt.total - receiptCashPaid).toFixed(2)}</p>
+                )}
+              </div>
+              <div className="flex gap-2 no-print">
+                <button onClick={printWebUSB} className="flex-1 border border-blue-300 text-blue-700 py-2.5 rounded-lg font-bold text-sm">
+                  Imprimir
+                </button>
+                <button onClick={() => { setReceipt(null); setReceiptCustomerName(''); setReceiptCashPaid(0); setPrintStatus('') }} className="flex-1 bg-blue-600 text-white py-2.5 rounded-lg font-bold text-sm">
+                  Nueva venta
+                </button>
+              </div>
+              {printStatus && <p className="text-xs text-center text-green-600 pt-1">{printStatus}</p>}
+            </div>
           </div>
         </div>
       )}

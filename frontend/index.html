@@ -8,6 +8,17 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Valis" />
     <title>Valis POS</title>
+    <style>
+      @media print {
+        body > * { display: none !important; }
+        .print-receipt { display: block !important; position: static !important; background: white !important; padding: 0 !important; margin: 0 auto !important; width: 58mm !important; max-width: 58mm !important; overflow: visible !important; box-shadow: none !important; border-radius: 0 !important; font-family: 'Courier New', Courier, monospace !important; font-size: 9px !important; line-height: 1.2 !important; }
+        .print-receipt * { display: revert !important; }
+        .print-receipt .no-print { display: none !important; }
+        .print-receipt .p-6 { padding: 2mm 3mm !important; }
+        .print-receipt table { font-size: 9px !important; }
+        .print-receipt th, .print-receipt td { padding: 0.5mm 0 !important; }
+      }
+    </style>
   </head>
   <body class="bg-gray-50">
     <div id="root"></div>

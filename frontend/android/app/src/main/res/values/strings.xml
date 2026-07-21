@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Valis POS</string>
+    <string name="title_activity_main">Valis POS</string>
+    <string name="package_name">com.valis.pos</string>
+    <string name="custom_url_scheme">com.valis.pos</string>
+</resources>
