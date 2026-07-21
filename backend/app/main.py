@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.database import engine, Base, SessionLocal
-from app.routers import products, alerts_api, scrape
+from app.routers import products, alerts_api, scrape, pos
 from app.services.matcher import update_product_embeddings
 from app.services.alerts import check_alerts
 from app.scrapers.makro import MakroScraper
@@ -64,6 +64,7 @@ app.add_middleware(
 app.include_router(products.router)
 app.include_router(alerts_api.router)
 app.include_router(scrape.router)
+app.include_router(pos.router)
 
 
 @app.get("/api/health")
@@ -74,15 +75,22 @@ def health():
 # Serve frontend (built SPA) from the same port
 frontend_dist = Path(__file__).parent.parent.parent / "frontend" / "dist"
 if frontend_dist.exists():
-    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
+    @app.get("/assets/{path:path}")
+    async def serve_assets(path: str):
+        file = frontend_dist / "assets" / path
+        if not file.is_file():
+            from fastapi import HTTPException
+            raise HTTPException(404)
+        media_type = "application/javascript" if file.suffix == ".js" else None
+        return FileResponse(str(file), media_type=media_type)
 
     @app.get("/")
     def serve_index():
         return FileResponse(str(frontend_dist / "index.html"))
 
-    @app.get("/{path:path}")
-    def serve_spa(path: str):
-        if path.startswith("api/"):
+    @app.exception_handler(404)
+    async def not_found(request, exc):
+        if request.url.path.startswith("/api/"):
             from fastapi.responses import JSONResponse
             return JSONResponse(status_code=404, content={"detail": "Not found"})
         return FileResponse(str(frontend_dist / "index.html"))
