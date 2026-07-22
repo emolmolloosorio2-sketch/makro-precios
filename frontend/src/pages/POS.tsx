@@ -312,10 +312,24 @@ export default function POS() {
   }
 
   async function printWebUSB() {
+    const html = receiptHTML()
+    // Android WebView JavaScript interface
+    const androidPrinter = (window as any).AndroidPrinter
+    if (androidPrinter) {
+      try {
+        androidPrinter.print(html)
+        setPrintStatus('Impreso correctamente')
+        setTimeout(() => setPrintStatus(''), 2000)
+      } catch (e: any) {
+        setPrintStatus('Error: ' + e.message)
+      }
+      return
+    }
+    // Capacitor plugin
     const cap = (window as any).Capacitor
     if (cap?.isPluginAvailable('Printer')) {
       try {
-        await cap.Plugins.Printer.print({ html: receiptHTML(), title: 'Recibo' })
+        await cap.Plugins.Printer.print({ html, title: 'Recibo' })
         setPrintStatus('Impreso correctamente')
         setTimeout(() => setPrintStatus(''), 2000)
       } catch (e: any) {
