@@ -357,7 +357,12 @@ export default function POS() {
       }
       return
     }
-    window.print()
+    if (typeof window.print === 'function') {
+      window.print()
+    } else {
+      setPrintStatus('Impresión no disponible en este dispositivo')
+      setTimeout(() => setPrintStatus(''), 3000)
+    }
   }
 
   async function handleCloseCaja() {
@@ -369,10 +374,10 @@ export default function POS() {
   }
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4">
+    <div className="flex flex-col lg:flex-row gap-2 md:gap-4">
       {/* Left: Cart + Payment */}
       <div className="flex-1">
-        <div className="bg-white rounded-lg shadow-sm border p-4 mb-4">
+        <div className="bg-white rounded-lg shadow-sm border p-3 md:p-4 mb-4">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold">Nueva Venta</h2>
             {cart.length > 0 && (
@@ -528,7 +533,7 @@ export default function POS() {
 
       {/* Right: Product quick pick */}
       <div className="lg:w-80">
-        <div className="bg-white rounded-lg shadow-sm border p-4">
+        <div className="bg-white rounded-lg shadow-sm border p-3 md:p-4">
           <h3 className="font-bold mb-2">Productos</h3>
           <input
             ref={searchRef}

@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
-import { posListProducts, posCreateProduct, posUpdateProduct, posDeleteProduct, posListCategories, posCreateCategory, posUpdateStock, PosProduct, PosCategory } from '../services/api'
+import { useEffect, useRef, useState } from 'react'
+import { posListProducts, posCreateProduct, posUpdateProduct, posDeleteProduct, posListCategories, posCreateCategory, posGetProductByBarcode, PosProduct, PosCategory } from '../services/api'
 
 export default function PosProducts() {
   const [products, setProducts] = useState<PosProduct[]>([])
   const [categories, setCategories] = useState<PosCategory[]>([])
   const [search, setSearch] = useState('')
+  const [catFilter, setCatFilter] = useState(0)
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<PosProduct | null>(null)
   const [name, setName] = useState('')
@@ -16,15 +17,53 @@ export default function PosProducts() {
   const [unit, setUnit] = useState('unidad')
   const [categoryId, setCategoryId] = useState<number | undefined>()
   const [newCat, setNewCat] = useState('')
-  const [stockAdj, setStockAdj] = useState(0)
+  // Global barcode scanner (same as POS)
+  const scanBuf = useRef('')
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.key === 'Enter') {
+        const code = scanBuf.current.trim()
+        if (code) {
+          e.preventDefault()
+          scanBuf.current = ''
+          handleScanBarcode(code)
+        }
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        scanBuf.current += e.key
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  async function handleScanBarcode(code: string) {
+    if (!code.trim()) return
+    try {
+      const p = await posGetProductByBarcode(code.trim())
+      edit(p)
+      setScanCode('')
+      setTimeout(() => scanRef.current?.focus(), 0)
+    } catch {
+      resetForm()
+      setBarcode(code.trim())
+      setName('')
+      setPrice(0)
+      setStock(0)
+      setShowForm(true)
+      setScanCode('')
+      setTimeout(() => scanRef.current?.focus(), 0)
+    }
+  }
 
   useEffect(() => {
     posListCategories().then(setCategories)
   }, [])
 
   useEffect(() => {
-    posListProducts(search || undefined).then(setProducts)
-  }, [search])
+    posListProducts(search || undefined, catFilter || undefined).then(setProducts)
+  }, [search, catFilter])
 
   function edit(p: PosProduct) {
     setEditing(p)
@@ -55,7 +94,7 @@ export default function PosProducts() {
       await posCreateProduct(data)
     }
     resetForm()
-    setProducts(await posListProducts(search || undefined))
+    setProducts(await posListProducts(search || undefined, catFilter || undefined))
   }
 
   async function handleDelete(id: number) {
@@ -71,31 +110,44 @@ export default function PosProducts() {
     setNewCat('')
   }
 
-  async function handleStockAdjust(p: PosProduct) {
-    const q = prompt(`Ajustar stock de "${p.name}":`, '0')
-    if (q === null) return
-    const num = Number(q)
-    if (isNaN(num)) return
-    await posUpdateStock(p.id, num)
-    setProducts(await posListProducts(search || undefined))
-  }
-
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold">Productos</h1>
-        <button onClick={() => { resetForm(); setShowForm(true) }} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">
+        <button onClick={() => { resetForm(); setShowForm(true) }} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm">
           + Nuevo
         </button>
       </div>
 
-      <input
-        type="text"
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-        placeholder="Buscar producto..."
-        className="w-full border rounded-lg px-3 py-2 mb-4"
-      />
+      <input type="text" className="sr-only" autoFocus />
+      <div className="flex gap-1 md:gap-2 mb-4">
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Buscar producto..."
+          className="flex-1 border rounded-lg px-2 md:px-3 py-2 text-sm md:text-base min-w-0"
+        />
+        <select
+          value={catFilter}
+          onChange={e => setCatFilter(Number(e.target.value))}
+          className="border rounded-lg px-2 md:px-3 py-2 text-sm md:text-base w-auto"
+        >
+          <option value={0}>Todas</option>
+          {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <button
+          onClick={async () => {
+            const name = prompt('Nombre de la nueva categoría:')
+            if (name?.trim()) {
+              await posCreateCategory(name.trim())
+              setCategories(await posListCategories())
+            }
+          }}
+          className="border rounded-lg px-2 md:px-3 py-2 text-sm md:text-base hover:bg-gray-50 shrink-0"
+          title="Agregar categoría"
+        >+</button>
+      </div>
 
       {showForm && (
         <form onSubmit={handleSave} className="bg-white rounded-lg border p-4 mb-4 space-y-3">
@@ -148,35 +200,32 @@ export default function PosProducts() {
         </form>
       )}
 
-      <div className="bg-white rounded-lg border overflow-hidden">
+      <div className="bg-white rounded-lg border overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 border-b">
-              <th className="text-left p-2">Código</th>
-              <th className="text-left p-2">Nombre</th>
-              <th className="p-2 text-right">Precio</th>
-              <th className="p-2 text-right">Costo</th>
-              <th className="p-2 text-right">Stock</th>
-              <th className="p-2 text-center">Min</th>
-              <th className="p-2 text-center">Cat</th>
-              <th className="p-2"></th>
+              <th className="text-left p-1 md:p-2">Nombre</th>
+              <th className="p-1 md:p-2 text-right">Precio</th>
+              <th className="p-1 md:p-2 text-right hidden md:table-cell">Costo</th>
+              <th className="p-1 md:p-2 text-right">Stock</th>
+              <th className="p-1 md:p-2 text-center hidden md:table-cell">Min</th>
+              <th className="p-1 md:p-2 text-center hidden md:table-cell">Cat</th>
+              <th className="p-0.5 md:p-2"></th>
             </tr>
           </thead>
           <tbody>
             {products.map(p => (
               <tr key={p.id} className="border-b hover:bg-gray-50">
-                <td className="p-2 font-mono text-xs">{p.barcode || '—'}</td>
-                <td className="p-2">{p.name}</td>
-                <td className="p-2 text-right font-medium">S/{p.price.toFixed(2)}</td>
-                <td className="p-2 text-right text-gray-500">{p.cost_price ? `S/${p.cost_price.toFixed(2)}` : '—'}</td>
-                <td className={`p-2 text-right font-medium ${p.stock <= (p.min_stock ?? 0) ? 'text-red-600' : ''}`}>{p.stock}</td>
-                <td className="p-2 text-center text-gray-400">{p.min_stock ?? '—'}</td>
-                <td className="p-2 text-center text-xs">{p.category_name || '—'}</td>
-                <td className="p-2">
+                <td className="p-1 md:p-2">{p.name}</td>
+                <td className="p-1 md:p-2 text-right font-medium">S/{p.price.toFixed(2)}</td>
+                <td className="p-1 md:p-2 text-right text-gray-500 hidden md:table-cell">{p.cost_price ? `S/${p.cost_price.toFixed(2)}` : '—'}</td>
+                <td className={`p-1 md:p-2 text-right font-medium ${p.stock <= (p.min_stock ?? 0) ? 'text-red-600' : ''}`}>{p.stock}</td>
+                <td className="p-1 md:p-2 text-center text-gray-400 text-xs hidden md:table-cell">{p.min_stock ?? '—'}</td>
+                <td className="p-1 md:p-2 text-center text-[10px] md:text-xs hidden md:table-cell">{p.category_name || '—'}</td>
+                <td className="p-0.5 md:p-2 whitespace-nowrap">
                   <div className="flex gap-1">
-                    <button onClick={() => edit(p)} className="text-blue-600 text-xs">Editar</button>
-                    <button onClick={() => handleStockAdjust(p)} className="text-green-600 text-xs">Stock</button>
-                    <button onClick={() => handleDelete(p.id)} className="text-red-600 text-xs">Eliminar</button>
+                    <button onClick={() => edit(p)} className="w-7 h-7 flex items-center justify-center border border-blue-300 rounded text-blue-600 text-base hover:bg-blue-50" title="Editar">✎</button>
+                    <button onClick={() => handleDelete(p.id)} className="w-7 h-7 flex items-center justify-center border border-red-300 rounded text-red-600 text-base hover:bg-red-50" title="Eliminar">✕</button>
                   </div>
                 </td>
               </tr>

@@ -11,7 +11,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-50">
       <nav className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-2 md:px-4 py-3 flex items-center justify-between">
           <Link to="/pos" className="text-xl font-bold text-blue-600">
             Valis
           </Link>
@@ -23,7 +23,7 @@ export default function App() {
           </div>
         </div>
       </nav>
-      <main className="max-w-7xl mx-auto px-4 py-6">
+      <main className="max-w-7xl mx-auto px-2 md:px-4 py-4 md:py-6">
         <Routes>
           <Route path="/" element={<POS />} />
           <Route path="/product/:id" element={<ProductDetail />} />
